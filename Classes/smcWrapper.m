@@ -2,7 +2,8 @@
  *	FanControl
  *
  *	Copyright (c) 2006-2012 Hendrik Holtmann
-*
+ *  Portions Copyright (c) 2013 Michael Wilber
+ *
  *	smcWrapper.m - MacBook(Pro) FanControl application
  *
  *	This program is free software; you can redistribute it and/or modify
@@ -23,45 +24,42 @@
 #import "smcWrapper.h"
 #import <CommonCrypto/CommonDigest.h>
 
-NSString * const smc_checksum=@"2ea544babe8a58dccc1364c920d473c8";
-static NSDictionary *tsensors = nil;
+//TODO: This is the smcFanControl 2.5ß checksum, it needs to be updated for the next release.
+NSString * const smc_checksum=@"03548c5634bd01315b19c46bf329cceb";
+static NSArray *allSensors = nil;
+
 
 @implementation smcWrapper
 	io_connect_t conn;
 
 +(void)init{
 	SMCOpen(&conn);
-    tsensors = [[NSDictionary alloc] initWithContentsOfFile:[[NSBundle mainBundle] pathForResource:@"tsensors" ofType:@"plist"]];
+    allSensors = [[NSArray alloc] initWithObjects:@"TC0D",@"TC0H",@"TC0F",@"TCAH",@"TCBH",@"TC0P",nil];
+}
++(void)cleanUp{
+    SMCClose(conn);
 }
 
 +(float) get_maintemp{
 	float c_temp;
-        
-	NSRange range_pro=[[MachineDefaults computerModel] rangeOfString:@"MacPro"];
-	if (range_pro.length > 0) {
-		//special readout for MacPro
-		c_temp=[smcWrapper get_mptemp];
-	} else {
-        SMCVal_t      val;
-        NSMutableArray *allTSensors = [[tsensors allKeys] mutableCopy];
-        NSString *foundKey = [tsensors objectForKey:[MachineDefaults computerModel]];
-        if (foundKey !=nil) {
-            foundKey = [MachineDefaults computerModel];
-        } else {
-            foundKey = @"standard";
-        }
-        [allTSensors removeObject:foundKey];
-        SMCReadKey2((char*)[[tsensors objectForKey:foundKey] UTF8String], &val,conn);
-		c_temp= ((val.bytes[0] * 256 + val.bytes[1]) >> 2)/64;
-        
-        if (c_temp<=0) {
-            for (NSString *key in allTSensors) {
-                SMCReadKey2((char*)[[tsensors objectForKey:key] UTF8String], &val,conn);
+    
+    SMCVal_t      val;
+    NSString *sensor = [[NSUserDefaults standardUserDefaults] objectForKey:@"TSensor"];
+    SMCReadKey2((char*)[sensor UTF8String], &val,conn);
+    c_temp= ((val.bytes[0] * 256 + val.bytes[1]) >> 2)/64;
+    
+    if (c_temp<=0) {
+        for (NSString *sensor in allSensors) {
+                SMCReadKey2((char*)[sensor UTF8String], &val,conn);
                 c_temp= ((val.bytes[0] * 256 + val.bytes[1]) >> 2)/64;
-                if (c_temp>0) break;
-            }
+                if (c_temp>0) {
+                    [[NSUserDefaults standardUserDefaults] setObject:sensor forKey:@"TSensor"];
+                    [[NSUserDefaults standardUserDefaults] synchronize];
+                    break;
+                }
         }
     }
+
 
 	return c_temp;
 }
@@ -109,7 +107,7 @@ static NSDictionary *tsensors = nil;
     SMCVal_t      val;
     int           totalFans;
 	SMCReadKey2("FNum", &val,conn);
-    totalFans = _strtoul(val.bytes, val.dataSize, 10); 
+    totalFans = _strtoul((char *)val.bytes, val.dataSize, 10);
 	return totalFans;
 }
 
@@ -168,10 +166,12 @@ static NSDictionary *tsensors = nil;
 }
 
 //call smc binary with setuid rights and apply
+// The smc binary is given root permissions in FanControl.m with the setRights method.
 +(void)setKey_external:(NSString *)key value:(NSString *)value{
 	NSString *launchPath = [[NSBundle mainBundle]   pathForResource:@"smc" ofType:@""];
-	//first check if it's the right binary (security)
 	NSString *checksum=[smcWrapper createCheckSum:launchPath];
+    //first check if it's the right binary (security)
+    // MW: Disabled smc binary checksum. This should be re-enabled in an official release.
 	if (![checksum  isEqualToString:smc_checksum]) {
 		NSLog(@"smcFanControl: Security Error: smc-binary is not the distributed one");
 		return;
